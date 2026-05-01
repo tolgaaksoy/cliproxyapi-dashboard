@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const CONTAINER_NAME = process.env.CLIPROXYAPI_CONTAINER_NAME || "cliproxyapi";
 const COMPOSE_FILE = process.env.COMPOSE_FILE || "/opt/cliproxyapi/infrastructure/docker-compose.yml";
 const IMAGE_NAME = process.env.IMAGE_NAME || "ghcr.io/tolgaaksoy/cliproxyapi";
+const COMPOSE_SERVICE_NAME = process.env.COMPOSE_SERVICE_NAME || "cliproxyapi";
 
 interface PortBinding {
   HostIp: string;
@@ -170,7 +171,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (composeAvailable) {
-      await runCompose(["up", "-d", "--no-deps", "--force-recreate", CONTAINER_NAME]);
+      await runCompose(["up", "-d", "--no-deps", "--force-recreate", COMPOSE_SERVICE_NAME]);
     } else {
       await recreateWithDockerRun(configSnapshot, imageTag);
     }
@@ -179,7 +180,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     try {
       if (composeAvailable) {
-        await runCompose(["up", "-d", "--no-deps", CONTAINER_NAME]);
+        await runCompose(["up", "-d", "--no-deps", COMPOSE_SERVICE_NAME]);
         logger.info("Recovery: compose ensured proxy service is up");
       } else if (configSnapshot) {
         await recreateWithDockerRun(configSnapshot, `${IMAGE_NAME}:latest`);
