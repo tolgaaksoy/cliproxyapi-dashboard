@@ -114,13 +114,13 @@ async function isComposeAvailable() {
   } catch (error) {
     const errorText = getCommandErrorText(error);
     const composeMissing =
-      errorText.includes("unknown command: docker compose') ||
+      errorText.includes("unknown command: docker compose") ||
       errorText.includes("unknown shorthand flag: 'f' in -f");
 
     if (composeMissing) {
       logger.info("Docker compose not available in runtime, using docker run fallback");
     } else {
-      logger.warn({ err: error }, "Compose availability check falled, using fallback");
+      logger.warn({ err: error }, "Compose availability check failed, using fallback");
     }
 
     return false;
