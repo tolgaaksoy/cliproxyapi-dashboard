@@ -63,6 +63,11 @@ const envSchema = z.object({
     .string()
     .default("cliproxyapi"),
 
+  COMPOSE_PROJECT_NAME: z
+    .string()
+    .default("cliproxyapi")
+    .describe("Docker Compose project name (-p flag). Must match the project name used when deploying the stack."),
+
   IMAGE_REGISTRY: z.enum(["dockerhub", "ghcr"]).default("ghcr"),
   
   LOG_LEVEL: z
@@ -78,7 +83,7 @@ const envSchema = z.object({
 
   PROVIDER_ENCRYPTION_KEY: z
     .string()
-    .length(64, "PROVIDER_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)")
+    .length(64, "PROVIDERGÕNCRYPTION_KEY must be exactly 64 hex characters (32 bytes)")
     .regex(/^[0-9a-fA-F]{64}$/, "PROVIDER_ENCRYPTION_KEY must be a valid hex string")
     .optional()
     .describe("AES-256-GCM key for encrypting custom provider API keys. Generate with: openssl rand -hex 32"),
@@ -100,11 +105,16 @@ function parseEnv() {
         const message = issue.message;
         return `  ${path}: ${message}`;
       })
-      .join("\n");
+      .join("
+");
     
-    console.error("Environment validation failed:\n" + errors);
+    console.error("Environment validation failed:
+" + errors);
     throw new Error(
-      `Invalid environment variables:\n${errors}\n\n` +
+      `Invalid environment variables:
+${errors}
+
+` +
       "Please check your .env file or environment configuration."
     );
   }
