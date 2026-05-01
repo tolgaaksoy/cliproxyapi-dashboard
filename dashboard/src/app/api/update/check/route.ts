@@ -140,6 +140,15 @@ async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): 
             return { name: tag } as DockerHubTag;
           }
 
+          // Docker-Content-Digest header contains the manifest list digest,
+          // which matches RepoDigests from docker inspect (used for version resolution)
+          const contentDigest = manifestResponse.headers.get("docker-content-digest");
+          if (contentDigest) {
+            await manifestResponse.body?.cancel();
+            return { name: tag, digest: contentDigest.replace("sha256:", "") };
+          }
+
+          // Fallback: parse manifest body for per-arch digest
           const manifestData = (await manifestResponse.json()) as GhcrManifestResponse;
           const digest = manifestData.config?.digest || manifestData.manifests?.[0]?.digest;
 
@@ -162,9 +171,17 @@ async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): 
         });
 
         if (latestManifestResponse.ok) {
-          const latestManifestData = (await latestManifestResponse.json()) as GhcrManifestResponse;
-          const latestDigest = latestManifestData.config?.digest || latestManifestData.manifests?.[0]?.digest;
-          latestTag = latestDigest ? { name: "latest", digest: latestDigest } : { name: "latest" };
+          // Docker-Content-Digest header contains the manifest list digest,
+          // which matches RepoDigests from docker inspect (used for version resolution)
+          const contentDigest = latestManifestResponse.headers.get("docker-content-digest");
+          if (contentDigest) {
+            await latestManifestResponse.body?.cancel();
+            latestTag = { name: "latest", digest: contentDigest.replace("sha256:", "") };
+          } else {
+            const latestManifestData = (await latestManifestResponse.json()) as GhcrManifestResponse;
+            const latestDigest = latestManifestData.config?.digest || latestManifestData.manifests?.[0]?.digest;
+            latestTag = latestDigest ? { name: "latest", digest: latestDigest } : { name: "latest" };
+          }
         } else {
           await latestManifestResponse.body?.cancel();
           latestTag = { name: "latest" };
