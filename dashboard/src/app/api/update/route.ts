@@ -14,6 +14,7 @@ const CONTAINER_NAME = process.env.CLIPROXYAPI_CONTAINER_NAME || "cliproxyapi";
 const COMPOSE_FILE = process.env.COMPOSE_FILE || "/opt/cliproxyapi/infrastructure/docker-compose.yml";
 const IMAGE_NAME = process.env.IMAGE_NAME || "ghcr.io/tolgaaksoy/cliproxyapi";
 const COMPOSE_SERVICE_NAME = process.env.COMPOSE_SERVICE_NAME || "cliproxyapi";
+const COMPOSE_PROJECT_NAME = process.env.COMPOSE_PROJECT_NAME || "cliproxyapi";
 
 interface PortBinding {
   HostIp: string;
@@ -103,7 +104,7 @@ async function recreateWithDockerRun(config: ContainerConfig, imageTag: string) 
 }
 
 async function runCompose(args: string[]) {
-  return execFileAsync("docker", ["compose", "-f", COMPOSE_FILE, ...args]);
+  return execFileAsync("docker", ["compose", "-p", COMPOSE_PROJECT_NAME, "-f", COMPOSE_FILE, ...args]);
 }
 
 async function isComposeAvailable() {
@@ -113,13 +114,13 @@ async function isComposeAvailable() {
   } catch (error) {
     const errorText = getCommandErrorText(error);
     const composeMissing =
-      errorText.includes("unknown command: docker compose") ||
+      errorText.includes("unknown command: docker compose') ||
       errorText.includes("unknown shorthand flag: 'f' in -f");
 
     if (composeMissing) {
       logger.info("Docker compose not available in runtime, using docker run fallback");
     } else {
-      logger.warn({ err: error }, "Compose availability check failed, using fallback");
+      logger.warn({ err: error }, "Compose availability check falled, using fallback");
     }
 
     return false;
