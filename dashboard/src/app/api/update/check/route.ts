@@ -15,12 +15,21 @@ interface DockerHubTag {
   digest?: string;
 }
 
-interface GitHubPackageVersion {
-  metadata?: {
-    container?: {
-      tags?: string[];
-    };
+interface GhcrTokenResponse {
+  token?: string;
+}
+
+interface GhcrTagsListResponse {
+  tags?: string[];
+}
+
+interface GhcrManifestResponse {
+  config?: {
+    digest?: string;
   };
+  manifests?: Array<{
+    digest?: string;
+  }>;
 }
 
 interface VersionInfo {
@@ -62,55 +71,120 @@ async function getDockerHubTags(imageName: string, skipCache = false): Promise<D
   return tags;
 }
 
-async function getGhcrTagsFromGitHubPackages(skipCache = false): Promise<DockerHubTag[]> {
-  const cacheKey = `ghcr-tags:${env.IMAGE_NAME}`;
+function extractGhcrRepositoryPath(imageName: string): string {
+  const normalized = imageName.replace(/^https?:\/\//, "");
+  if (normalized.startsWith("ghcr.io/")) {
+    return normalized.substring("ghcr.io/".length);
+  }
+  return normalized;
+}
+
+async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): Promise<DockerHubTag[]> {
+  const cacheKey = `ghcr-tags:${imageName}`;
 
   if (!skipCache) {
     const cached = updateCheckCache.get(cacheKey) as DockerHubTag[] | null;
     if (cached) return cached;
   }
 
-  const response = await fetch(
-    "https://api.github.com/orgs/tolgaaksoy/packages/container/cliproxyapi/versions?per_page=20",
-    {
+  try {
+    const repository = extractGhcrRepositoryPath(imageName);
+
+    const tokenResponse = await fetch(
+      `https://ghcr.io/token?service=ghcr.io&scope=repository:${encodeURIComponent(repository)}:pull`,
+      { cache: "no-store" }
+    );
+
+    if (!tokenResponse.ok) {
+      await tokenResponse.body?.cancel();
+      return [];
+    }
+
+    const tokenData = (await tokenResponse.json()) as GhcrTokenResponse;
+    const token = tokenData.token;
+    if (!token) {
+      return [];
+    }
+
+    const tagsResponse = await fetch(`https://ghcr.io/v2/${repository}/tags/list`, {
       cache: "no-store",
       headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "cliproxyapi-dashboard/update-check",
+        Authorization: `Bearer ${token}`,
       },
+    });
+
+    if (!tagsResponse.ok) {
+      await tagsResponse.body?.cancel();
+      return [];
     }
-  );
 
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error("Failed to fetch GHCR tags");
+    const tagsData = (await tagsResponse.json()) as GhcrTagsListResponse;
+    const allTags = tagsData.tags || [];
+
+    const latestIncluded = allTags.includes("latest");
+    const versionTags = allTags.filter((tag) => tag.startsWith("v"));
+
+    const manifestEntries = await Promise.all(
+      versionTags.map(async (tag) => {
+        try {
+          const manifestResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/${tag}`, {
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.oci.image.index.v1+json",
+            },
+          });
+
+          if (!manifestResponse.ok) {
+            await manifestResponse.body?.cancel();
+            return { name: tag } as DockerHubTag;
+          }
+
+          const manifestData = (await manifestResponse.json()) as GhcrManifestResponse;
+          const digest = manifestData.config?.digest || manifestData.manifests?.[0]?.digest;
+
+          return digest ? { name: tag, digest } : { name: tag };
+        } catch {
+          return { name: tag };
+        }
+      })
+    );
+
+    let latestTag: DockerHubTag | null = null;
+    if (latestIncluded) {
+      try {
+        const latestManifestResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/latest`, {
+          cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.oci.image.index.v1+json",
+          },
+        });
+
+        if (latestManifestResponse.ok) {
+          const latestManifestData = (await latestManifestResponse.json()) as GhcrManifestResponse;
+          const latestDigest = latestManifestData.config?.digest || latestManifestData.manifests?.[0]?.digest;
+          latestTag = latestDigest ? { name: "latest", digest: latestDigest } : { name: "latest" };
+        } else {
+          await latestManifestResponse.body?.cancel();
+          latestTag = { name: "latest" };
+        }
+      } catch {
+        latestTag = { name: "latest" };
+      }
+    }
+
+    const tags = latestTag ? [latestTag, ...manifestEntries] : manifestEntries;
+    updateCheckCache.set(cacheKey, tags, CACHE_TTL.DOCKER_HUB_TAGS);
+    return tags;
+  } catch {
+    return [];
   }
-
-  const versions = (await response.json()) as GitHubPackageVersion[];
-  const tags: DockerHubTag[] = versions
-    .flatMap((version) => version.metadata?.container?.tags || [])
-    .filter((tag) => tag && tag !== "latest")
-    .map((tag) => ({ name: tag }));
-
-  // keep unique tags, preserve order from API
-  const seen = new Set<string>();
-  const uniqueTags = tags.filter((tag) => {
-    if (seen.has(tag.name)) return false;
-    seen.add(tag.name);
-    return true;
-  });
-
-  if (!seen.has("latest")) {
-    uniqueTags.unshift({ name: "latest" });
-  }
-
-  updateCheckCache.set(cacheKey, uniqueTags, CACHE_TTL.DOCKER_HUB_TAGS);
-  return uniqueTags;
 }
 
 async function getAvailableTags(skipCache = false): Promise<DockerHubTag[]> {
   if (env.IMAGE_REGISTRY === "ghcr") {
-    return getGhcrTagsFromGitHubPackages(skipCache);
+    return getGhcrTagsFromRegistryV2(env.IMAGE_NAME, skipCache);
   }
 
   return getDockerHubTags(env.IMAGE_NAME, skipCache);
