@@ -207,10 +207,27 @@ async function getCurrentImageDigest(): Promise<{ version: string; digest: strin
     const tagVersion = imageTag ?? "latest";
     const cleanDigest = fullDigest.replace("sha256:", "");
     
+    // Get the manifest list digest from RepoDigests for accurate GHCR comparison
+    let repoDigest = "unknown";
+    try {
+      const { stdout: repoDigestsJson } = await execFileAsync("docker", [
+        "inspect", image,
+        "--format", "{{json .RepoDigests}}",
+      ]);
+      const repoDigests: string[] = JSON.parse(repoDigestsJson.trim());
+      const match = repoDigests.find((d) => d.startsWith(image.split(":")[0] + "@"));
+      if (match) {
+        repoDigest = match.split("@sha256:")[1] || "unknown";
+      }
+    } catch {
+      // repoDigest stays "unknown"
+    }
+    
     return { 
       version: tagVersion, 
       digest: cleanDigest.substring(0, 12),
-      fullDigest: cleanDigest 
+      fullDigest: cleanDigest,
+      repoDigest,
     };
   } catch {
     return { version: "unknown", digest: "unknown", fullDigest: "unknown", repoDigest: "unknown" };
@@ -306,10 +323,11 @@ export async function GET(request: NextRequest) {
       });
 
     let resolvedCurrentVersion = current.version;
-    if (current.version === "latest" && current.fullDigest !== "unknown") {
+    // Use repoDigest (manifest list digest) for GHCR comparison, fallback to per-arch digest
+    const compareDigest = current.repoDigest !== "unknown" ? current.repoDigest : current.fullDigest;
+    if (current.version === "latest" && compareDigest !== "unknown") {
       const matchingTag = versionedTags.find((t) => 
-        t.digest.startsWith(current.fullDigest.substring(0, 12)) ||
-        current.fullDigest.startsWith(t.digest.substring(0, 12))
+        t.digest && t.digest.replace("sha256:", "").startsWith(compareDigest.substring(0, 12))
       );
       if (matchingTag) {
         resolvedCurrentVersion = matchingTag.name;
@@ -319,7 +337,7 @@ export async function GET(request: NextRequest) {
     const versionNames = versionedTags.map((t) => t.name);
 
     const updateAvailable = latestDigest !== "unknown"
-      ? current.digest !== "unknown" && latestDigest !== current.digest
+      ? current.digest !== "unknown" && latestDigest !== (current.repoDigest !== "unknown" ? current.repoDigest.substring(0, 12) : current.digest)
       : versionNames.length > 0 && resolvedCurrentVersion !== versionNames[0];
 
     const versionInfo: VersionInfo = {
