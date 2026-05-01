@@ -54,6 +54,12 @@ const envSchema = z.object({
   CLIPROXYAPI_CONTAINER_NAME: z
     .string()
     .default("cliproxyapi"),
+
+  IMAGE_NAME: z.string().default("ghcr.io/tolgaaksoy/cliproxyapi"),
+
+  COMPOSE_FILE: z.string().default("/opt/cliproxyapi/infrastructure/docker-compose.yml"),
+
+  IMAGE_REGISTRY: z.enum(["dockerhub", "ghcr"]).default("ghcr"),
   
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace"])
