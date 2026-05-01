@@ -59,6 +59,10 @@ const envSchema = z.object({
 
   COMPOSE_FILE: z.string().default("/opt/cliproxyapi/infrastructure/docker-compose.yml"),
 
+  COMPOSE_SERVICE_NAME: z
+    .string()
+    .default("cliproxyapi"),
+
   IMAGE_REGISTRY: z.enum(["dockerhub", "ghcr"]).default("ghcr"),
   
   LOG_LEVEL: z
