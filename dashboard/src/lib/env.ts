@@ -83,7 +83,7 @@ const envSchema = z.object({
 
   PROVIDER_ENCRYPTION_KEY: z
     .string()
-    .length(64, "PROVIDERGÕNCRYPTION_KEY must be exactly 64 hex characters (32 bytes)")
+    .length(64, "PROVIDER_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)")
     .regex(/^[0-9a-fA-F]{64}$/, "PROVIDER_ENCRYPTION_KEY must be a valid hex string")
     .optional()
     .describe("AES-256-GCM key for encrypting custom provider API keys. Generate with: openssl rand -hex 32"),
@@ -105,16 +105,11 @@ function parseEnv() {
         const message = issue.message;
         return `  ${path}: ${message}`;
       })
-      .join("
-");
+      .join("\n");
     
-    console.error("Environment validation failed:
-" + errors);
+    console.error("Environment validation failed:\n" + errors);
     throw new Error(
-      `Invalid environment variables:
-${errors}
-
-` +
+      `Invalid environment variables:\n${errors}\n\n` +
       "Please check your .env file or environment configuration."
     );
   }
