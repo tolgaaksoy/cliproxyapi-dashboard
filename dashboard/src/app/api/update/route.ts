@@ -10,9 +10,9 @@ import { logger } from "@/lib/logger";
 
 const execFileAsync = promisify(execFile);
 
-const CONTAINER_NAME = "cliproxyapi";
-const COMPOSE_FILE = "/opt/cliproxyapi/infrastructure/docker-compose.yml";
-const IMAGE_NAME = "eceasy/cli-proxy-api-plus";
+const CONTAINER_NAME = process.env.CLIPROXYAPI_CONTAINER_NAME || "cliproxyapi";
+const COMPOSE_FILE = process.env.COMPOSE_FILE || "/opt/cliproxyapi/infrastructure/docker-compose.yml";
+const IMAGE_NAME = process.env.IMAGE_NAME || "ghcr.io/tolgaaksoy/cliproxyapi";
 
 interface PortBinding {
   HostIp: string;
