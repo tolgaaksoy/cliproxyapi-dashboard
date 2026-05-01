@@ -190,7 +190,7 @@ async function getAvailableTags(skipCache = false): Promise<DockerHubTag[]> {
   return getDockerHubTags(env.IMAGE_NAME, skipCache);
 }
 
-async function getCurrentImageDigest(): Promise<{ version: string; digest: string; fullDigest: string }> {
+async function getCurrentImageDigest(): Promise<{ version: string; digest: string; fullDigest: string; repoDigest: string }> {
   try {
     const { stdout } = await execFileAsync("docker", [
       "inspect",
@@ -201,7 +201,7 @@ async function getCurrentImageDigest(): Promise<{ version: string; digest: strin
     
     const [image, fullDigest] = stdout.trim().split(" ");
     if (!image || !fullDigest) {
-      return { version: "unknown", digest: "unknown", fullDigest: "unknown" };
+      return { version: "unknown", digest: "unknown", fullDigest: "unknown", repoDigest: "unknown" };
     }
     const [, imageTag] = image.split(":");
     const tagVersion = imageTag ?? "latest";
@@ -213,7 +213,7 @@ async function getCurrentImageDigest(): Promise<{ version: string; digest: strin
       fullDigest: cleanDigest 
     };
   } catch {
-    return { version: "unknown", digest: "unknown", fullDigest: "unknown" };
+    return { version: "unknown", digest: "unknown", fullDigest: "unknown", repoDigest: "unknown" };
   }
 }
 
