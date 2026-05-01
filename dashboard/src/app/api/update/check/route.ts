@@ -127,6 +127,23 @@ async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): 
     const manifestEntries = await Promise.all(
       versionTags.map(async (tag) => {
         try {
+          const manifestHeadResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/${tag}`, {
+            method: "HEAD",
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.oci.image.index.v1+json",
+            },
+          });
+
+          // Docker-Content-Digest header contains the manifest list digest,
+          // which matches RepoDigests from docker inspect (used for version resolution)
+          const headDigest = manifestHeadResponse.headers.get("docker-content-digest");
+          if (manifestHeadResponse.ok && headDigest) {
+            return { name: tag, digest: headDigest.replace("sha256:", "") };
+          }
+
+          // Fallback: GET manifest body when HEAD unavailable/missing digest
           const manifestResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/${tag}`, {
             cache: "no-store",
             headers: {
@@ -136,19 +153,9 @@ async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): 
           });
 
           if (!manifestResponse.ok) {
-            await manifestResponse.body?.cancel();
             return { name: tag } as DockerHubTag;
           }
 
-          // Docker-Content-Digest header contains the manifest list digest,
-          // which matches RepoDigests from docker inspect (used for version resolution)
-          const contentDigest = manifestResponse.headers.get("docker-content-digest");
-          if (contentDigest) {
-            await manifestResponse.body?.cancel();
-            return { name: tag, digest: contentDigest.replace("sha256:", "") };
-          }
-
-          // Fallback: parse manifest body for per-arch digest
           const manifestData = (await manifestResponse.json()) as GhcrManifestResponse;
           const digest = manifestData.config?.digest || manifestData.manifests?.[0]?.digest;
 
@@ -162,7 +169,8 @@ async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): 
     let latestTag: DockerHubTag | null = null;
     if (latestIncluded) {
       try {
-        const latestManifestResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/latest`, {
+        const latestHeadResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/latest`, {
+          method: "HEAD",
           cache: "no-store",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -170,21 +178,27 @@ async function getGhcrTagsFromRegistryV2(imageName: string, skipCache = false): 
           },
         });
 
-        if (latestManifestResponse.ok) {
-          // Docker-Content-Digest header contains the manifest list digest,
-          // which matches RepoDigests from docker inspect (used for version resolution)
-          const contentDigest = latestManifestResponse.headers.get("docker-content-digest");
-          if (contentDigest) {
-            await latestManifestResponse.body?.cancel();
-            latestTag = { name: "latest", digest: contentDigest.replace("sha256:", "") };
-          } else {
+        // Docker-Content-Digest header contains the manifest list digest,
+        // which matches RepoDigests from docker inspect (used for version resolution)
+        const latestHeadDigest = latestHeadResponse.headers.get("docker-content-digest");
+        if (latestHeadResponse.ok && latestHeadDigest) {
+          latestTag = { name: "latest", digest: latestHeadDigest.replace("sha256:", "") };
+        } else {
+          const latestManifestResponse = await fetch(`https://ghcr.io/v2/${repository}/manifests/latest`, {
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: "application/vnd.oci.image.index.v1+json",
+            },
+          });
+
+          if (latestManifestResponse.ok) {
             const latestManifestData = (await latestManifestResponse.json()) as GhcrManifestResponse;
             const latestDigest = latestManifestData.config?.digest || latestManifestData.manifests?.[0]?.digest;
             latestTag = latestDigest ? { name: "latest", digest: latestDigest } : { name: "latest" };
+          } else {
+            latestTag = { name: "latest" };
           }
-        } else {
-          await latestManifestResponse.body?.cancel();
-          latestTag = { name: "latest" };
         }
       } catch {
         latestTag = { name: "latest" };
