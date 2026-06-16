@@ -1,6 +1,6 @@
 {
-  "version": "0.1.86",
-  "tag": "dashboard-v0.1.86",
-  "releaseUrl": "https://github.com/tolgaaksoy/cliproxyapi-dashboard/releases/tag/dashboard-v0.1.86",
-  "releaseNotes": ""
+  "version": "0.1.87",
+  "tag": "dashboard-v0.1.87",
+  "releaseUrl": "https://github.com/tolgaaksoy/cliproxyapi-dashboard/releases/tag/dashboard-v0.1.87",
+  "releaseNotes": "Synced with upstream v0.1.81 + fork customizations.\n\nUpstream changes:\n- fix(usage): respect server TZ for today filter and daily aggregation\n- fix(usage): drain queued records in batches\n- fix(proxy/status): probe management API for liveness instead of docker ps name match\n- fix(perplexity-sidecar): port to perplexity-webui-scraper 1.0.x API\n- fix(install): make systemd compose command cwd-portable\n- chore: migrate from CLIProxyAPIPlus to CLIProxyAPI\n- feat(custom-providers): allow admins to share custom providers globally"
 }

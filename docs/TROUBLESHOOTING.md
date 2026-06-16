@@ -2,6 +2,37 @@
 
 ← [Back to README](../README.md)
 
+## `no configuration file provided: not found`
+
+If `docker compose` reports:
+
+```text
+no configuration file provided: not found
+```
+
+…you are running the command from a directory that does not contain `docker-compose.yml`. The compose file lives in `infrastructure/`, so any `docker compose ...` invocation must either run from there or be given an explicit path.
+
+```bash
+# Run from the infrastructure directory (recommended)
+cd /path/to/cliproxyapi-dashboard/infrastructure
+docker compose up -d --wait
+
+# Or run from anywhere with --project-directory
+docker compose --project-directory /path/to/cliproxyapi-dashboard/infrastructure up -d --wait
+```
+
+If you installed via `install.sh`, prefer the systemd unit — it already sets the
+working directory correctly:
+
+```bash
+sudo systemctl start cliproxyapi-stack
+sudo systemctl status cliproxyapi-stack
+```
+
+The systemd unit also uses `--project-directory` so it is safe to copy the
+`ExecStart` line out of `systemctl cat cliproxyapi-stack` and run it manually
+from any directory.
+
 ## Services Not Starting
 
 ### Local build vs image behavior (important)
@@ -119,7 +150,7 @@ nc -zv YOUR_SERVER_IP 1455
 # ... test other OAuth ports
 ```
 
-**Check CLIProxyAPIPlus logs:**
+**Check CLIProxyAPI logs:**
 ```bash
 docker compose logs -f cliproxyapi
 ```
@@ -173,6 +204,17 @@ docker compose logs dashboard
 - Database not initialized (run `npx prisma migrate deploy` in container)
 - JWT_SECRET not set in `.env`
 - Dashboard container can't reach PostgreSQL
+
+### Header shows "System offline" even though the proxy is healthy
+
+If the management API is reachable (e.g. `curl -H "Authorization: Bearer $MANAGEMENT_API_KEY" $CLIPROXYAPI_MANAGEMENT_URL/config` returns `200`) but the dashboard header still flags **System offline**, you are most likely hitting a name-resolution mismatch.
+
+Earlier releases inferred liveness from `docker ps` filtered by an exact regex match against `CLIPROXYAPI_CONTAINER_NAME`. Docker Swarm names tasks `<stack>_<service>.<slot>.<task-id>`, so the static name never matched and the indicator was permanently red ([#215](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/215)). Kubernetes, Nomad, and Compose without a pinned `container_name:` were affected the same way.
+
+The current release decides liveness by probing the Management API directly, so the indicator now goes green under any orchestrator. The `CLIPROXYAPI_CONTAINER_NAME` variable is only consulted to populate the cosmetic uptime label via `docker inspect`; if the name does not resolve (Swarm task IDs, K8s pod IDs, no Docker socket) the uptime simply renders as unknown — the green dot still works. If you upgrade and the indicator stays red, check:
+
+- The dashboard container can reach `CLIPROXYAPI_MANAGEMENT_URL` on the cluster network.
+- `MANAGEMENT_API_KEY` matches the value the proxy is configured with — a mismatch now correctly surfaces as offline.
 
 ## Can't Login to Dashboard
 

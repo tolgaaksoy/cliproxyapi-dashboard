@@ -1,5 +1,7 @@
 import asyncio
+import importlib
 import json
+import re
 import logging
 import os
 import subprocess
@@ -14,9 +16,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from perplexity_webui_scraper import (
-    ConversationConfig,
     MODELS,
-    Model,
+    ConversationConfig,
     Perplexity,
     PerplexityError,
 )
@@ -38,62 +39,87 @@ SESSION_COOKIE_NAME = "__Secure-next-auth.session-token"
 # Auto Model Discovery — builds model map from library at startup
 # ---------------------------------------------------------------------------
 
-PROVIDER_MAP = {
-    "gpt": "openai",
-    "claude": "anthropic",
-    "gemini": "google",
-    "grok": "xai",
-    "kimi": "moonshot",
-    "pplx": "perplexity",
-    "sonar": "perplexity",
-    "experimental": "perplexity",
+# Map of model-id namespace prefixes (e.g. "openai/gpt-5.4" -> "openai") to the
+# provider label we expose downstream. perplexity-webui-scraper >= 1.0 ships
+# namespaced model ids, so we infer the provider from the namespace half.
+NAMESPACE_PROVIDER = {
+    "perplexity": "perplexity",
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "google",
+    "xai": "xai",
+    "moonshot": "moonshot",
+    "nvidia": "nvidia",
+}
+
+# Map of library short-slugs (the part after "<namespace>/") to the
+# perplexity-prefixed alias we expose on /v1/models. Anything not listed
+# here falls through to the generic "perplexity-{slug}" form. "sonar-2"
+# is mapped onto "perplexity-sonar" so existing config.yaml entries keep
+# working when Perplexity renames their Sonar model.
+SLUG_ALIASES = {
+    "best": "perplexity-auto",
+    "sonar": "perplexity-sonar",
+    "sonar-2": "perplexity-sonar",
+    "deep-research": "perplexity-deep-research",
 }
 
 
-def _slug_to_alias(slug: str) -> str:
-    """Convert library slug to our perplexity-prefixed alias.
-    e.g. 'best' -> 'perplexity-auto', 'gpt-5.4-thinking' -> 'perplexity-gpt-5.4-thinking'
+def _split_model_id(model_id: str) -> tuple[str, str]:
+    """Split a namespaced model id into ``(namespace, slug)``.
+
+    Falls back to ``("", model_id)`` when no namespace is present (older
+    library versions or unexpected ids).
     """
-    special = {
-        "best": "perplexity-auto",
-        "sonar": "perplexity-sonar",
-        "deep-research": "perplexity-deep-research",
-    }
-    if slug in special:
-        return special[slug]
+    if "/" in model_id:
+        namespace, _, slug = model_id.partition("/")
+        return namespace, slug
+    return "", model_id
+
+
+def _slug_to_alias(slug: str) -> str:
+    """Convert a library slug to our perplexity-prefixed alias.
+
+    e.g. ``"best"`` -> ``"perplexity-auto"``,
+         ``"gpt-5.4-thinking"`` -> ``"perplexity-gpt-5.4-thinking"``.
+    """
+    if slug in SLUG_ALIASES:
+        return SLUG_ALIASES[slug]
     return f"perplexity-{slug}"
 
 
-def _infer_provider(slug: str) -> str:
-    for prefix, provider in PROVIDER_MAP.items():
-        if slug.lower().startswith(prefix):
-            return provider
-    return "perplexity"
+def _infer_provider(namespace: str) -> str:
+    return NAMESPACE_PROVIDER.get(namespace, "perplexity")
 
 
 def discover_models() -> dict[str, dict]:
-    """Build {alias: {model, identifier, provider}} map from MODELS dict."""
+    """Build ``{alias: {model_id, identifier, provider, slug}}`` from MODELS.
+
+    perplexity-webui-scraper >= 1.0 exposes ``MODELS`` as a ``ModelRegistry``
+    singleton; iterate via ``MODELS.list_all()`` and pass model-id strings
+    (e.g. ``"perplexity/best"``) into ``Conversation.ask(model=...)``.
+    """
     registry: dict[str, dict] = {}
 
-    for slug, model_obj in MODELS.items():
+    for model in MODELS.list_all():
+        namespace, slug = _split_model_id(model.id)
         alias = _slug_to_alias(slug)
-        provider = _infer_provider(slug)
+        provider = _infer_provider(namespace)
         registry[alias] = {
-            "model": model_obj,
-            "identifier": model_obj.identifier,
+            "model_id": model.id,
+            "identifier": model.identifier,
             "provider": provider,
             "slug": slug,
         }
 
-    # Extra alias: perplexity-pro -> same as perplexity-auto
+    # Stable user-facing aliases. perplexity-pro is the public name for the
+    # auto-select model; perplexity-reasoning historically maps onto the same
+    # backend; perplexity-labs falls back to deep-research when no dedicated
+    # labs model is present.
     if "perplexity-auto" in registry:
         registry["perplexity-pro"] = registry["perplexity-auto"]
-
-    # Extra alias: perplexity-reasoning -> perplexity-auto (uses BEST in reasoning context)
-    if "perplexity-auto" in registry:
         registry["perplexity-reasoning"] = registry["perplexity-auto"]
 
-    # Extra alias: perplexity-labs -> deep-research if no dedicated labs model
     if "perplexity-labs" not in registry and "perplexity-deep-research" in registry:
         registry["perplexity-labs"] = registry["perplexity-deep-research"]
 
@@ -105,7 +131,9 @@ log.info("Discovered %d models: %s", len(MODEL_REGISTRY), list(MODEL_REGISTRY.ke
 
 
 # ---------------------------------------------------------------------------
-# Auto-update: check PyPI periodically, restart if newer version available
+# Auto-update: periodically reapply the requirements.txt pin and restart if
+# the installed version actually changed. Constraints come from requirements
+# .txt so a future major bump (e.g. 2.x) will not be installed silently.
 # ---------------------------------------------------------------------------
 
 
@@ -131,18 +159,71 @@ def _get_installed_version() -> str:
         return "0.0.0"
 
 
-def _get_pypi_version() -> str | None:
+# Package name and version-specifier source. The auto-updater MUST resolve the
+# spec against requirements.txt so a runtime upgrade can never escape the pin
+# that was tested at image-build time.
+PACKAGE_NAME = "perplexity-webui-scraper"
+REQUIREMENTS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "requirements.txt"
+)
+# Used only when requirements.txt is missing or unparseable. Mirror the pin
+# that ships in the repo so behaviour is predictable in both cases.
+DEFAULT_PIN_SPEC = f"{PACKAGE_NAME}>=1.0.2,<2"
+
+# Matches a requirements.txt line for PACKAGE_NAME, capturing the version
+# specifier portion (anything after the name up to a comment / env marker).
+_REQ_LINE_RE = re.compile(
+    r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*(?P<spec>[^;#]*)",
+)
+
+
+def _normalize_dist_name(name: str) -> str:
+    """PEP 503 normalisation: lowercase + collapse runs of ``-_.`` to ``-``."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _read_pinned_spec() -> str:
+    """Return the pip install spec for PACKAGE_NAME from requirements.txt.
+
+    Falls back to ``DEFAULT_PIN_SPEC`` when the file is missing, the package
+    is absent, or the line is malformed. The returned string is suitable to
+    pass directly to ``pip install``.
+    """
+    target = _normalize_dist_name(PACKAGE_NAME)
     try:
-        req = urllib.request.Request(
-            "https://pypi.org/pypi/perplexity-webui-scraper/json",
-            headers={"Accept": "application/json"},
+        with open(REQUIREMENTS_PATH, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or line.startswith("-"):
+                    continue
+                m = _REQ_LINE_RE.match(line)
+                if not m:
+                    continue
+                if _normalize_dist_name(m.group("name")) != target:
+                    continue
+                spec = (m.group("spec") or "").strip()
+                # Reassemble using the canonical package name; pip is
+                # case-insensitive but stable casing keeps logs readable.
+                return f"{PACKAGE_NAME}{spec}" if spec else PACKAGE_NAME
+    except OSError as exc:
+        log.warning(
+            "Cannot read %s for auto-update pin (%s); using default %r",
+            REQUIREMENTS_PATH,
+            exc,
+            DEFAULT_PIN_SPEC,
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("info", {}).get("version")
-    except Exception as exc:
-        log.debug("PyPI version check failed: %s", exc)
-    return None
+        return DEFAULT_PIN_SPEC
+
+    log.warning(
+        "%s not listed in %s; using default %r",
+        PACKAGE_NAME,
+        REQUIREMENTS_PATH,
+        DEFAULT_PIN_SPEC,
+    )
+    return DEFAULT_PIN_SPEC
+
+
+PINNED_SPEC = _read_pinned_spec()
 
 
 def _trigger_dashboard_sync():
@@ -166,20 +247,19 @@ def _trigger_dashboard_sync():
 
 
 def _auto_update_loop():
+    """Periodically reapply the pinned spec; restart only when the installed
+    version actually changed.
+
+    pip itself enforces the version constraint in ``PINNED_SPEC``, so a major
+    upstream release outside the pin (e.g. 2.x while pinned to ``<2``) is a
+    no-op here and does not trigger a restart loop.
+    """
     while True:
         time.sleep(UPDATE_CHECK_INTERVAL)
         try:
-            installed = _get_installed_version()
-            latest = _get_pypi_version()
-            if not latest or latest == installed:
-                log.debug("Library up to date (%s)", installed)
-                continue
+            installed_before = _get_installed_version()
 
-            log.info(
-                "New perplexity-webui-scraper version available: %s -> %s. Upgrading and restarting...",
-                installed,
-                latest,
-            )
+            log.debug("Reapplying pin %r (installed: %s)", PINNED_SPEC, installed_before)
             result = subprocess.run(
                 [
                     sys.executable,
@@ -189,19 +269,42 @@ def _auto_update_loop():
                     "--no-cache-dir",
                     "--quiet",
                     "--upgrade",
-                    "perplexity-webui-scraper",
+                    PINNED_SPEC,
                 ],
                 capture_output=True,
                 text=True,
                 timeout=120,
             )
-            if result.returncode == 0:
-                log.info("Upgrade successful. Triggering model sync before restart...")
-                _trigger_dashboard_sync()
-                log.info("Exiting for restart...")
-                os._exit(0)
-            else:
-                log.error("Upgrade failed: %s", result.stderr)
+
+            if result.returncode != 0:
+                log.error(
+                    "pip install %s failed (rc=%d): %s",
+                    PINNED_SPEC,
+                    result.returncode,
+                    (result.stderr or "").strip(),
+                )
+                continue
+
+            # importlib.metadata caches dist info per-call, but the loader
+            # itself caches the path entries. Invalidate so the post-install
+            # version read sees freshly written .dist-info files.
+            importlib.invalidate_caches()
+            installed_after = _get_installed_version()
+
+            if installed_after == installed_before:
+                log.debug("Library already at pinned ceiling (%s)", installed_after)
+                continue
+
+            log.info(
+                "%s upgraded within pin %r: %s -> %s. Syncing models and restarting...",
+                PACKAGE_NAME,
+                PINNED_SPEC,
+                installed_before,
+                installed_after,
+            )
+            _trigger_dashboard_sync()
+            log.info("Exiting for restart...")
+            os._exit(0)
         except Exception as exc:
             log.error("Auto-update check failed: %s", exc)
 
@@ -376,7 +479,7 @@ async def chat_completions(request: Request):
             detail=f"Unknown model: {model_name}. Available: {list(MODEL_REGISTRY.keys())}",
         )
 
-    model_obj = entry["model"]
+    model_id = entry["model_id"]
     query = messages_to_query(messages)
     request_id = f"chatcmpl-{uuid4().hex[:24]}"
     created = int(time.time())
@@ -388,7 +491,7 @@ async def chat_completions(request: Request):
     if stream:
         return StreamingResponse(
             _stream_response(
-                conversation, query, model_obj, model_name, request_id, created
+                conversation, query, model_id, model_name, request_id, created
             ),
             media_type="text/event-stream",
             headers={
@@ -399,7 +502,7 @@ async def chat_completions(request: Request):
         )
 
     try:
-        conversation.ask(query, model=model_obj, stream=False)
+        conversation.ask(query, model=model_id, stream=False)
         answer = conversation.answer or ""
 
         return JSONResponse(
@@ -433,7 +536,7 @@ async def chat_completions(request: Request):
 async def _stream_response(
     conversation,
     query: str,
-    model_obj: Model,
+    model_id: str,
     model_name: str,
     request_id: str,
     created: int,
@@ -444,7 +547,7 @@ async def _stream_response(
     def producer():
         last = ""
         try:
-            for resp in conversation.ask(query, model=model_obj, stream=True):
+            for resp in conversation.ask(query, model=model_id, stream=True):
                 current = resp.answer or ""
                 if len(current) > len(last):
                     delta = current[len(last) :]
@@ -453,7 +556,7 @@ async def _stream_response(
             loop.call_soon_threadsafe(queue.put_nowait, ("done", ""))
         except Exception as e:
             try:
-                conversation.ask(query, model=model_obj, stream=False)
+                conversation.ask(query, model=model_id, stream=False)
                 current = conversation.answer or ""
                 if len(current) > len(last):
                     loop.call_soon_threadsafe(

@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.81](https://github.com/itsmylife44/cliproxyapi-dashboard/compare/dashboard-v0.1.80...dashboard-v0.1.81) (2026-05-20)
+
+
+### Bug Fixes
+
+* **install:** make systemd compose command cwd-portable (fixes [#216](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/216)) ([#217](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/217)) ([bb01ed7](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/bb01ed7b67c4c2325801a6120075599c17e5e9a8))
+* log_warn to log_warning typo in install.sh (fixes [#205](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/205)) ([#214](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/214)) ([97a29dd](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/97a29dde74ee72b0e733f3a14b5c25490e303669))
+* **perplexity-sidecar:** auto-updater must respect requirements.txt pin ([abba67f](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/abba67f68cc2ea0ba98edecbe02f876daf5f99e4))
+* **perplexity-sidecar:** port to perplexity-webui-scraper 1.0.x API (fixes [#212](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/212)) ([5e50b59](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/5e50b59bac9bf2a29dfbf0ae2f0666c66f8b0961))
+* **proxy/status:** probe management API for liveness instead of docker ps name match ([#215](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/215)) ([14e9c16](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/14e9c1682e17c74a123feec2997cd6e608631825))
+* **usage:** drain queued records in batches ([#219](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/219)) ([dd6ef62](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/dd6ef624deb7088a62950b7f4eebec10d3ffcba3))
+
+## [0.1.80](https://github.com/itsmylife44/cliproxyapi-dashboard/compare/dashboard-v0.1.79...dashboard-v0.1.80) (2026-05-05)
+
+
+### Bug Fixes
+
+* **entrypoint:** add isShared column migration for custom_providers ([c35d09f](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/c35d09f8e319f97ae45ac1dc085f27bf6ecb6472))
+
+## [0.1.79](https://github.com/itsmylife44/cliproxyapi-dashboard/compare/dashboard-v0.1.78...dashboard-v0.1.79) (2026-05-05)
+
+
+### Features
+
+* **backup:** add external-cron scheduled backup runner ([df751ce](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/df751ce319e72f312704bb10273f54580ba5f44a))
+* **custom-providers:** allow admins to share custom providers globally ([#206](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/206)) ([adb3302](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/adb3302795ecd8215e52e49873e57a6bd54f02e5))
+* **i18n:** add Spanish translation ([#207](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/207)) ([15aa967](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/15aa96704accbf63ae1219e55eb53749804fb600))
+
+
+### Bug Fixes
+
+* **providers:** canonicalize oauth provider on write and add quota filter UI ([370634f](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/370634faa3c873c46957650d0020738d82ecf553))
+* **usage:** migrate collector from removed /usage to /usage-queue endpoint ([#209](https://github.com/itsmylife44/cliproxyapi-dashboard/issues/209)) ([32adc14](https://github.com/itsmylife44/cliproxyapi-dashboard/commit/32adc14ac9fde91cff3a6e6a9535ad214d2c1d4a))
+
 ## [0.1.78](https://github.com/itsmylife44/cliproxyapi-dashboard/compare/dashboard-v0.1.77...dashboard-v0.1.78) (2026-04-20)
 
 
