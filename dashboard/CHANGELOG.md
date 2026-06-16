@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.82](https://github.com/tolgaaksoy/cliproxyapi-dashboard/compare/dashboard-v0.1.81...dashboard-v0.1.82) (2026-06-16)
+
+
+### Features
+
+* add COMPOSE_PROJECT_NAME env var for docker compose project name ([d2215fa](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/d2215fa7a1e6fc66dd376135a2138932a5661bbd))
+* **custom-providers:** allow admins to share custom providers globally ([#206](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/206)) ([adb3302](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/adb3302795ecd8215e52e49873e57a6bd54f02e5))
+
+
+### Bug Fixes
+
+* add compose service env for update route ([48fdcab](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/48fdcab48cdaf7f0c2ac3a4d9ae2de02288f6950))
+* add COMPOSE_PROJECT_NAME (-p flag) to docker compose commands ([81a60fa](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/81a60fa29f447131fcec8d3dba0fc8b5193c11aa))
+* correct PROVIDER_ENCRYPTION_KEY encoding in env.ts ([2dbc4de](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/2dbc4de0cd81b7b320fa51b59d264cd5342c32fa))
+* correct string quote mismatch in isComposeAvailable ([9193a2a](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/9193a2ae415f5bf671b5c86de40db7d3f24e49ff))
+* **entrypoint:** add isShared column migration for custom_providers ([c35d09f](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/c35d09f8e319f97ae45ac1dc085f27bf6ecb6472))
+* **install:** make systemd compose command cwd-portable (fixes [#216](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/216)) ([#217](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/217)) ([bb01ed7](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/bb01ed7b67c4c2325801a6120075599c17e5e9a8))
+* log_warn to log_warning typo in install.sh (fixes [#205](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/205)) ([#214](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/214)) ([97a29dd](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/97a29dde74ee72b0e733f3a14b5c25490e303669))
+* **perplexity-sidecar:** auto-updater must respect requirements.txt pin ([abba67f](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/abba67f68cc2ea0ba98edecbe02f876daf5f99e4))
+* **perplexity-sidecar:** port to perplexity-webui-scraper 1.0.x API (fixes [#212](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/212)) ([5e50b59](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/5e50b59bac9bf2a29dfbf0ae2f0666c66f8b0961))
+* **proxy/status:** probe management API for liveness instead of docker ps name match ([#215](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/215)) ([14e9c16](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/14e9c1682e17c74a123feec2997cd6e608631825))
+* **update-check:** use HEAD for GHCR manifest digest lookup ([acac303](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/acac303dd4f4d95477d8545e0de34737aae36f37))
+* **usage:** drain queued records in batches ([#219](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/219)) ([dd6ef62](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/dd6ef624deb7088a62950b7f4eebec10d3ffcba3))
+* **usage:** migrate collector from removed /usage to /usage-queue endpoint ([#209](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/209)) ([32adc14](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/32adc14ac9fde91cff3a6e6a9535ad214d2c1d4a))
+* **usage:** respect server TZ for today filter and daily aggregation ([#221](https://github.com/tolgaaksoy/cliproxyapi-dashboard/issues/221)) ([a6454e9](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/a6454e950f83ada1f92e73037dff291eb67c8d49))
+* use compose service name in update route ([2f0d311](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/2f0d311e87bf340a99a665915702c5ddf8d34065))
+* use Docker-Content-Digest header for GHCR manifest list digest comparison ([fca438e](https://github.com/tolgaaksoy/cliproxyapi-dashboard/commit/fca438e65c5c24ff54c3857d4c91eae5fe9eb9f9))
+
 ## [0.1.81](https://github.com/itsmylife44/cliproxyapi-dashboard/compare/dashboard-v0.1.80...dashboard-v0.1.81) (2026-05-20)
 
 
