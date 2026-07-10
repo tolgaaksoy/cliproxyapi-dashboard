@@ -1,12 +1,42 @@
 #!/bin/bash
 #
 # CLIProxyAPI Stack Installation Script
-# Installs Docker, Docker Compose, configures UFW, generates secrets, and sets up systemd service
+# Installs Docker, Docker Compose, optionally configures UFW, generates secrets, and sets up systemd service
 #
-# Usage: sudo ./install.sh
+# Usage: sudo ./install.sh [--dashboard-only]
 #
 
 set -euo pipefail
+
+DASHBOARD_ONLY=0
+
+show_usage() {
+    cat << EOF
+Usage: sudo ./install.sh [options]
+
+Options:
+  --dashboard-only   Install only the dashboard stack and connect it to an existing CLIProxyAPI
+  -h, --help         Show this help message
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dashboard-only)
+            DASHBOARD_ONLY=1
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 # Color codes for output
 RED='\033[0;31m'
@@ -60,7 +90,12 @@ check_port_conflict() {
 }
 
 check_container_conflicts() {
-    local container_names=("cliproxyapi-caddy" "cliproxyapi" "cliproxyapi-dashboard" "cliproxyapi-docker-proxy" "cliproxyapi-postgres")
+    local container_names
+    if [ "${DASHBOARD_ONLY:-0}" -eq 1 ]; then
+        container_names=("cliproxyapi-dashboard" "cliproxyapi-postgres" "cliproxyapi-usage-collector" "cliproxyapi-backup-scheduler")
+    elif [ $DASHBOARD_ONLY -eq 0 ]; then
+        container_names=("cliproxyapi-caddy" "cliproxyapi" "cliproxyapi-dashboard" "cliproxyapi-docker-proxy" "cliproxyapi-postgres")
+    fi
     local conflicts=()
     
     # Only check if Docker is running
@@ -81,6 +116,150 @@ check_container_conflicts() {
     if [ ${#conflicts[@]} -gt 0 ]; then
         printf '%s\n' "${conflicts[@]}"
     fi
+}
+
+join_by_comma() {
+    if [ "$#" -eq 0 ]; then
+        echo "(none)"
+        return
+    fi
+
+    local output=""
+    local item
+    for item in "$@"; do
+        if [ -z "$output" ]; then
+            output="$item"
+        else
+            output="$output, $item"
+        fi
+    done
+    echo "$output"
+}
+
+port_in_range() {
+    local port=$1
+    [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+normalize_port_list() {
+    local raw=${1:-}
+    local item start end
+    local items=()
+    local ports=()
+    local IFS
+
+    raw="${raw//[[:space:]]/}"
+    [ -z "$raw" ] && return 0
+
+    IFS=','
+    read -ra items <<< "$raw"
+    for item in "${items[@]}"; do
+        [ -z "$item" ] && continue
+        if [[ "$item" =~ ^[0-9]+$ ]]; then
+            if ! port_in_range "$item"; then
+                return 1
+            fi
+            ports+=("$item")
+        elif [[ "$item" =~ ^([0-9]+):([0-9]+)$ ]]; then
+            start="${BASH_REMATCH[1]}"
+            end="${BASH_REMATCH[2]}"
+            if ! port_in_range "$start" || ! port_in_range "$end" || [ "$start" -gt "$end" ]; then
+                return 1
+            fi
+            ports+=("$start:$end")
+        else
+            return 1
+        fi
+    done
+
+    printf '%s\n' "${ports[@]}" | awk 'NF && !seen[$0]++'
+}
+
+normalize_ssh_port_list() {
+    local raw=${1:-}
+    local normalized
+    if ! normalized=$(normalize_port_list "$raw"); then
+        return 1
+    fi
+    if echo "$normalized" | grep -q ':'; then
+        return 1
+    fi
+    echo "$normalized"
+}
+
+detect_ssh_ports() {
+    local candidates=()
+    local port file
+
+    if [ -n "${SSH_CONNECTION:-}" ]; then
+        port=$(echo "$SSH_CONNECTION" | awk '{print $4}')
+        if port_in_range "$port"; then
+            candidates+=("$port")
+        fi
+    fi
+
+    if command -v sshd &> /dev/null; then
+        while read -r port; do
+            if port_in_range "$port"; then
+                candidates+=("$port")
+            fi
+        done < <(sshd -T 2>/dev/null | awk 'tolower($1) == "port" { print $2 }')
+    fi
+
+    for file in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [ -f "$file" ] || continue
+        while read -r port; do
+            if port_in_range "$port"; then
+                candidates+=("$port")
+            fi
+        done < <(sed -E 's/[[:space:]]*#.*$//' "$file" | awk 'tolower($1) == "port" { print $2 }')
+    done
+
+    if [ ${#candidates[@]} -eq 0 ]; then
+        candidates+=(22)
+    fi
+
+    printf '%s\n' "${candidates[@]}" | awk 'NF && !seen[$0]++'
+}
+
+ufw_rule_exists() {
+    local port=$1
+    local proto=$2
+    ufw status 2>/dev/null | grep -Eq "(^|[[:space:]])${port}/${proto}([[:space:]]|$)"
+}
+
+add_ufw_allow_if_missing() {
+    local port=$1
+    local proto=$2
+    local comment=$3
+
+    if ufw_rule_exists "$port" "$proto"; then
+        return 1
+    fi
+
+    ufw allow "$port/$proto" comment "$comment"
+    log_info "Added UFW rule: $port/$proto"
+    return 0
+}
+
+add_required_ufw_rules() {
+    local port
+
+    UFW_RULES_ADDED=0
+
+    for port in "${REQUIRED_TCP_PORTS[@]}"; do
+        if add_ufw_allow_if_missing "$port" tcp "CLIProxyAPI Dashboard required TCP"; then
+            UFW_RULES_ADDED=$((UFW_RULES_ADDED + 1))
+        fi
+    done
+
+    for port in "${REQUIRED_UDP_PORTS[@]}"; do
+        if add_ufw_allow_if_missing "$port" udp "CLIProxyAPI Dashboard required UDP"; then
+            UFW_RULES_ADDED=$((UFW_RULES_ADDED + 1))
+        fi
+    done
+
+    return 0
 }
 
 # Check if running as root
@@ -165,6 +344,19 @@ echo ""
 log_info "=== Configuration ==="
 echo ""
 
+if [ $DASHBOARD_ONLY -eq 0 ]; then
+    read -p "Install dashboard only and connect to an existing CLIProxyAPI? [y/N]: " DASHBOARD_ONLY_INPUT
+    if [[ "$DASHBOARD_ONLY_INPUT" =~ ^[Yy]$ ]]; then
+        DASHBOARD_ONLY=1
+    fi
+fi
+
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    log_info "Dashboard-only mode enabled: CLIProxyAPI, Caddy, Docker proxy, and Perplexity sidecar will not be installed."
+    log_info "The dashboard will be exposed on 127.0.0.1:3000 for your reverse proxy."
+fi
+echo ""
+
 # Domain configuration
 while true; do
     read -p "Enter your domain (e.g., example.com): " DOMAIN
@@ -184,37 +376,84 @@ done
 read -p "Enter dashboard subdomain [default: dashboard]: " DASHBOARD_SUBDOMAIN
 DASHBOARD_SUBDOMAIN="${DASHBOARD_SUBDOMAIN:-dashboard}"
 
-# API subdomain
-read -p "Enter API subdomain [default: api]: " API_SUBDOMAIN
-API_SUBDOMAIN="${API_SUBDOMAIN:-api}"
+API_SUBDOMAIN="api"
+if [ $DASHBOARD_ONLY -eq 0 ]; then
+    # API subdomain
+    read -p "Enter API subdomain [default: api]: " API_SUBDOMAIN
+    API_SUBDOMAIN="${API_SUBDOMAIN:-api}"
+fi
 
 # External reverse proxy support
 echo ""
-read -p "Use existing reverse proxy/Caddy? [y/N]: " EXTERNAL_PROXY_INPUT
-if [[ "$EXTERNAL_PROXY_INPUT" =~ ^[Yy]$ ]]; then
+if [ $DASHBOARD_ONLY -eq 1 ]; then
     EXTERNAL_PROXY=1
 else
-    EXTERNAL_PROXY=0
+    read -p "Use existing reverse proxy/Caddy? [y/N]: " EXTERNAL_PROXY_INPUT
+    if [[ "$EXTERNAL_PROXY_INPUT" =~ ^[Yy]$ ]]; then
+        EXTERNAL_PROXY=1
+    else
+        EXTERNAL_PROXY=0
+    fi
+fi
+
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    echo ""
+    while true; do
+        read -p "Enter existing CLIProxyAPI management URL (remote, same-host, or non-Docker) [default: http://host.docker.internal:8317/v0/management]: " EXISTING_CLIPROXYAPI_MANAGEMENT_URL
+        EXISTING_CLIPROXYAPI_MANAGEMENT_URL="${EXISTING_CLIPROXYAPI_MANAGEMENT_URL:-http://host.docker.internal:8317/v0/management}"
+        EXISTING_CLIPROXYAPI_MANAGEMENT_URL="${EXISTING_CLIPROXYAPI_MANAGEMENT_URL%/}"
+        if [[ "$EXISTING_CLIPROXYAPI_MANAGEMENT_URL" =~ ^https?://.+/v0/management$ ]]; then
+            break
+        fi
+        log_error "Management URL must be an http(s) URL ending in /v0/management"
+    done
+
+    while true; do
+        read -p "Enter existing CLIProxyAPI public API URL (for generated client configs): " EXISTING_API_URL
+        EXISTING_API_URL="${EXISTING_API_URL%/}"
+        if [[ "$EXISTING_API_URL" =~ ^https?://.+ ]]; then
+            break
+        fi
+        log_error "API URL must start with http:// or https://"
+    done
+
+    while true; do
+        read -s -p "Enter existing CLIProxyAPI management API key: " EXISTING_MANAGEMENT_API_KEY
+        echo ""
+        if [[ "$EXISTING_MANAGEMENT_API_KEY" =~ ^[^[:space:]]{16,}$ ]]; then
+            break
+        fi
+        log_error "Management API key must be at least 16 characters and cannot contain whitespace"
+    done
 fi
 
 # OAuth provider support
 echo ""
-read -p "Enable OAuth provider callbacks? [y/N]: " OAUTH_ENABLED
-if [[ "$OAUTH_ENABLED" =~ ^[Yy]$ ]]; then
-    OAUTH_ENABLED=1
-else
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    log_info "OAuth callback ports are managed by your existing CLIProxyAPI installation."
     OAUTH_ENABLED=0
+else
+    read -p "Enable OAuth provider callbacks? [y/N]: " OAUTH_ENABLED
+    if [[ "$OAUTH_ENABLED" =~ ^[Yy]$ ]]; then
+        OAUTH_ENABLED=1
+    else
+        OAUTH_ENABLED=0
+    fi
 fi
 
 # Perplexity Pro Sidecar support
 echo ""
-log_info "Perplexity Pro Sidecar provides an OpenAI-compatible API wrapper for Perplexity Pro subscriptions."
-log_info "If enabled, it runs as a separate container alongside the stack."
-read -p "Enable Perplexity Pro Sidecar? [y/N]: " PERPLEXITY_ENABLED_INPUT
-if [[ "$PERPLEXITY_ENABLED_INPUT" =~ ^[Yy]$ ]]; then
-    PERPLEXITY_ENABLED=1
-else
+if [ $DASHBOARD_ONLY -eq 1 ]; then
     PERPLEXITY_ENABLED=0
+else
+    log_info "Perplexity Pro Sidecar provides an OpenAI-compatible API wrapper for Perplexity Pro subscriptions."
+    log_info "If enabled, it runs as a separate container alongside the stack."
+    read -p "Enable Perplexity Pro Sidecar? [y/N]: " PERPLEXITY_ENABLED_INPUT
+    if [[ "$PERPLEXITY_ENABLED_INPUT" =~ ^[Yy]$ ]]; then
+        PERPLEXITY_ENABLED=1
+    else
+        PERPLEXITY_ENABLED=0
+    fi
 fi
 
 # Backup interval
@@ -249,9 +488,15 @@ done
 
 echo ""
 log_info "Configuration summary:"
+log_info "  Mode: $([ $DASHBOARD_ONLY -eq 1 ] && echo 'dashboard-only' || echo 'full stack')"
 log_info "  Domain: $DOMAIN"
 log_info "  Dashboard: ${DASHBOARD_SUBDOMAIN}.${DOMAIN}"
-log_info "  API: ${API_SUBDOMAIN}.${DOMAIN}"
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    log_info "  Existing CLIProxyAPI management URL: $EXISTING_CLIPROXYAPI_MANAGEMENT_URL"
+    log_info "  Existing CLIProxyAPI public API URL: $EXISTING_API_URL"
+else
+    log_info "  API: ${API_SUBDOMAIN}.${DOMAIN}"
+fi
 log_info "  External reverse proxy: $([ $EXTERNAL_PROXY -eq 1 ] && echo 'enabled' || echo 'disabled')"
 log_info "  OAuth callbacks: $([ $OAUTH_ENABLED -eq 1 ] && echo 'enabled' || echo 'disabled')"
 log_info "  Perplexity Sidecar: $([ $PERPLEXITY_ENABLED -eq 1 ] && echo 'enabled' || echo 'disabled')"
@@ -274,13 +519,16 @@ log_info "=== Preflight Conflict Detection ==="
 echo ""
 
 # Define required ports (80/443 excluded if using external proxy)
-REQUIRED_PORTS=()
+REQUIRED_TCP_PORTS=()
+REQUIRED_UDP_PORTS=()
 if [ $EXTERNAL_PROXY -eq 0 ]; then
-    REQUIRED_PORTS+=(80 443)
+    REQUIRED_TCP_PORTS+=(80 443)
+    REQUIRED_UDP_PORTS+=(443)
 fi
 if [ $OAUTH_ENABLED -eq 1 ]; then
-    REQUIRED_PORTS+=(8085 1455 54545 51121 11451)
+    REQUIRED_TCP_PORTS+=(8085 1455 54545 51121 11451)
 fi
+REQUIRED_PORTS=("${REQUIRED_TCP_PORTS[@]}")
 
 # Check for port conflicts
 if [ $EXTERNAL_PROXY -eq 1 ]; then
@@ -415,86 +663,137 @@ echo ""
 log_info "=== UFW Firewall Configuration ==="
 echo ""
 
-if ! command -v ufw &> /dev/null; then
-    log_info "Installing UFW..."
-    apt-get install -y ufw
+UFW_AVAILABLE=0
+if command -v ufw &> /dev/null; then
+    UFW_AVAILABLE=1
+else
+    log_warning "UFW is not installed."
+    log_warning "The installer will not install or enable a firewall unless you explicitly opt in."
+    read -p "Install and configure UFW rules now? [y/N]: " INSTALL_UFW_INPUT
+    if [[ "$INSTALL_UFW_INPUT" =~ ^[Yy]$ ]]; then
+        log_info "Installing UFW..."
+        apt-get update
+        apt-get install -y ufw
+        UFW_AVAILABLE=1
+    else
+        log_info "Skipping UFW installation and firewall changes."
+    fi
 fi
 
-# Check if UFW is active
-UFW_STATUS=$(ufw status | head -n 1)
+if [ $UFW_AVAILABLE -eq 1 ]; then
+    UFW_STATUS=$(ufw status | head -n 1)
 
-if [[ "$UFW_STATUS" == *"inactive"* ]]; then
-    log_info "Configuring UFW rules..."
-    
-    # SSH first to prevent lockout
-    log_info "Allowing SSH (port 22) to prevent lockout..."
-    ufw limit 22/tcp comment 'SSH with rate limiting'
-    
-    # HTTP/HTTPS (skip if using external reverse proxy)
-    if [ $EXTERNAL_PROXY -eq 0 ]; then
-        log_info "Allowing HTTP/HTTPS (ports 80, 443)..."
-        ufw allow 80/tcp comment 'HTTP'
-        ufw allow 443/tcp comment 'HTTPS'
-        ufw allow 443/udp comment 'HTTP/3 (QUIC)'
-    else
-        log_info "Skipping HTTP/HTTPS rules (external proxy mode)"
-    fi
-    
-    # OAuth callback ports (conditional)
-    if [ $OAUTH_ENABLED -eq 1 ]; then
-        log_info "Allowing OAuth callback ports..."
-        ufw allow 8085/tcp comment 'CLIProxyAPI OAuth callback 1'
-        ufw allow 1455/tcp comment 'CLIProxyAPI OAuth callback 2'
-        ufw allow 54545/tcp comment 'CLIProxyAPI OAuth callback 3'
-        ufw allow 51121/tcp comment 'CLIProxyAPI OAuth callback 4'
-        ufw allow 11451/tcp comment 'CLIProxyAPI OAuth callback 5'
-    fi
-    
-    # Enable UFW
-    log_warning "Enabling UFW firewall..."
-    echo "y" | ufw enable
-    
-    log_success "UFW configured and enabled"
-else
-    log_warning "UFW already active, checking rules..."
-    
-    # Add missing rules if needed
-    RULES_ADDED=0
-    
-    # Helper function to check and add rule
-    add_rule_if_missing() {
-        local PORT=$1
-        local PROTO=$2
-        local COMMENT=$3
-        
-        if ! ufw status | grep -q "$PORT/$PROTO"; then
-            ufw allow "$PORT/$PROTO" comment "$COMMENT"
-            log_info "Added rule: $PORT/$PROTO"
-            RULES_ADDED=1
+    if [[ "$UFW_STATUS" == *"inactive"* ]]; then
+        log_warning "UFW is currently inactive."
+        log_warning "Enabling UFW on an existing server can block any service port that is not explicitly allowed."
+        log_warning "The installer will not enable UFW unless you opt in and confirm the exact allowed ports."
+        echo ""
+        log_info "Ports required by this selected installation mode:"
+        log_info "  TCP: $(join_by_comma "${REQUIRED_TCP_PORTS[@]}")"
+        log_info "  UDP: $(join_by_comma "${REQUIRED_UDP_PORTS[@]}")"
+        echo ""
+        read -p "Configure and enable UFW now? [y/N]: " ENABLE_UFW_INPUT
+
+        if [[ "$ENABLE_UFW_INPUT" =~ ^[Yy]$ ]]; then
+            readarray -t DETECTED_SSH_PORTS < <(detect_ssh_ports)
+            DETECTED_SSH_PORTS_TEXT=$(join_by_comma "${DETECTED_SSH_PORTS[@]}")
+
+            while true; do
+                read -p "SSH TCP port(s) to keep open [${DETECTED_SSH_PORTS_TEXT}]: " SSH_PORTS_INPUT
+                SSH_PORTS_INPUT="${SSH_PORTS_INPUT:-$(IFS=','; echo "${DETECTED_SSH_PORTS[*]}")}"
+                if SSH_PORTS_NORMALIZED=$(normalize_ssh_port_list "$SSH_PORTS_INPUT"); then
+                    SSH_PORTS=()
+                    if [ -n "$SSH_PORTS_NORMALIZED" ]; then
+                        readarray -t SSH_PORTS <<< "$SSH_PORTS_NORMALIZED"
+                    fi
+                    if [ ${#SSH_PORTS[@]} -gt 0 ]; then
+                        break
+                    fi
+                fi
+                log_error "Enter one or more SSH TCP ports, comma-separated (for example: 22,2222)"
+            done
+
+            while true; do
+                read -p "Additional existing TCP service ports/ranges to keep open (comma-separated, optional): " EXTRA_TCP_INPUT
+                if EXTRA_TCP_NORMALIZED=$(normalize_port_list "$EXTRA_TCP_INPUT"); then
+                    EXTRA_TCP_PORTS=()
+                    if [ -n "$EXTRA_TCP_NORMALIZED" ]; then
+                        readarray -t EXTRA_TCP_PORTS <<< "$EXTRA_TCP_NORMALIZED"
+                    fi
+                    break
+                fi
+                log_error "Invalid TCP port list. Use values like: 25,587,8000:8010"
+            done
+
+            while true; do
+                read -p "Additional existing UDP service ports/ranges to keep open (comma-separated, optional): " EXTRA_UDP_INPUT
+                if EXTRA_UDP_NORMALIZED=$(normalize_port_list "$EXTRA_UDP_INPUT"); then
+                    EXTRA_UDP_PORTS=()
+                    if [ -n "$EXTRA_UDP_NORMALIZED" ]; then
+                        readarray -t EXTRA_UDP_PORTS <<< "$EXTRA_UDP_NORMALIZED"
+                    fi
+                    break
+                fi
+                log_error "Invalid UDP port list. Use values like: 53,123,6000:6010"
+            done
+
+            echo ""
+            log_warning "UFW enable plan:"
+            log_warning "  SSH TCP: $(join_by_comma "${SSH_PORTS[@]}")"
+            log_warning "  Dashboard/CLIProxyAPI TCP: $(join_by_comma "${REQUIRED_TCP_PORTS[@]}")"
+            log_warning "  Dashboard/CLIProxyAPI UDP: $(join_by_comma "${REQUIRED_UDP_PORTS[@]}")"
+            log_warning "  Additional TCP: $(join_by_comma "${EXTRA_TCP_PORTS[@]}")"
+            log_warning "  Additional UDP: $(join_by_comma "${EXTRA_UDP_PORTS[@]}")"
+            log_warning "Any other inbound ports may become unreachable after UFW is enabled."
+            read -p "Type ENABLE to apply these rules and enable UFW, or anything else to skip: " UFW_ENABLE_CONFIRM
+
+            if [ "$UFW_ENABLE_CONFIRM" = "ENABLE" ]; then
+                for port in "${SSH_PORTS[@]}"; do
+                    if ! ufw_rule_exists "$port" tcp; then
+                        ufw limit "$port/tcp" comment 'SSH access'
+                        log_info "Added UFW SSH rule: $port/tcp"
+                    fi
+                done
+
+                add_required_ufw_rules
+
+                for port in "${EXTRA_TCP_PORTS[@]}"; do
+                    add_ufw_allow_if_missing "$port" tcp "User-preserved existing TCP service" || true
+                done
+
+                for port in "${EXTRA_UDP_PORTS[@]}"; do
+                    add_ufw_allow_if_missing "$port" udp "User-preserved existing UDP service" || true
+                done
+
+                ufw --force enable
+                log_success "UFW configured and enabled"
+            else
+                log_warning "Skipping UFW enable. Configure firewall rules manually before exposing the service."
+            fi
+        else
+            log_info "Skipping UFW enable. Existing network access will not be changed by the installer."
         fi
-    }
-    
-    add_rule_if_missing 22 tcp "SSH with rate limiting"
-    if [ $EXTERNAL_PROXY -eq 0 ]; then
-        add_rule_if_missing 80 tcp "HTTP"
-        add_rule_if_missing 443 tcp "HTTPS"
-        add_rule_if_missing 443 udp "HTTP/3 (QUIC)"
-    fi
-    
-    # OAuth callback ports (conditional)
-    if [ $OAUTH_ENABLED -eq 1 ]; then
-        add_rule_if_missing 8085 tcp "CLIProxyAPI OAuth callback 1"
-        add_rule_if_missing 1455 tcp "CLIProxyAPI OAuth callback 2"
-        add_rule_if_missing 54545 tcp "CLIProxyAPI OAuth callback 3"
-        add_rule_if_missing 51121 tcp "CLIProxyAPI OAuth callback 4"
-        add_rule_if_missing 11451 tcp "CLIProxyAPI OAuth callback 5"
-    fi
-    
-    if [ $RULES_ADDED -eq 0 ]; then
-        log_success "All required UFW rules already configured"
     else
-        ufw reload
-        log_success "UFW rules updated"
+        log_warning "UFW is already active. Existing rules and default policies will be preserved."
+        if [ ${#REQUIRED_TCP_PORTS[@]} -eq 0 ] && [ ${#REQUIRED_UDP_PORTS[@]} -eq 0 ]; then
+            log_info "This selected installation mode does not require opening public UFW ports."
+        else
+            log_info "Ports required by this selected installation mode:"
+            log_info "  TCP: $(join_by_comma "${REQUIRED_TCP_PORTS[@]}")"
+            log_info "  UDP: $(join_by_comma "${REQUIRED_UDP_PORTS[@]}")"
+            read -p "Add missing CLIProxyAPI Dashboard UFW allow rules to the active firewall? [y/N]: " ADD_UFW_RULES_INPUT
+            if [[ "$ADD_UFW_RULES_INPUT" =~ ^[Yy]$ ]]; then
+                add_required_ufw_rules
+                if [ "${UFW_RULES_ADDED:-0}" -eq 0 ]; then
+                    log_success "All selected-mode UFW rules were already configured"
+                else
+                    ufw reload
+                    log_success "UFW rules updated"
+                fi
+            else
+                log_info "Skipping UFW rule changes. Configure required ports manually if needed."
+            fi
+        fi
     fi
 fi
 
@@ -513,6 +812,10 @@ POSTGRES_PASSWORD=$(openssl rand -hex 32)
 COLLECTOR_API_KEY=$(openssl rand -hex 32)
 BACKUP_SCHEDULER_KEY=$(openssl rand -hex 32)
 PROVIDER_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    MANAGEMENT_API_KEY="$EXISTING_MANAGEMENT_API_KEY"
+fi
 
 if [ $PERPLEXITY_ENABLED -eq 1 ]; then
     PERPLEXITY_SIDECAR_SECRET=$(openssl rand -hex 32)
@@ -547,9 +850,21 @@ fi
 if [ $SKIP_ENV -eq 0 ]; then
     log_info "Creating .env file..."
 
+    DASHBOARD_PUBLIC_URL="https://${DASHBOARD_SUBDOMAIN}.${DOMAIN}"
+    if [ $DASHBOARD_ONLY -eq 1 ]; then
+        CLIPROXYAPI_MANAGEMENT_ENV="$EXISTING_CLIPROXYAPI_MANAGEMENT_URL"
+        API_PUBLIC_URL="$EXISTING_API_URL"
+        STACK_MODE="dashboard-only"
+    else
+        CLIPROXYAPI_MANAGEMENT_ENV="http://cliproxyapi:8317/v0/management"
+        API_PUBLIC_URL="https://${API_SUBDOMAIN}.${DOMAIN}"
+        STACK_MODE="full"
+    fi
+
     cat > "$ENV_FILE" << EOF
 # CLIProxyAPI Stack Environment Configuration
 # Generated by install.sh on $(date)
+STACK_MODE=$STACK_MODE
 
 # Domain configuration
 DOMAIN=$DOMAIN
@@ -568,7 +883,7 @@ BACKUP_SCHEDULER_KEY=$BACKUP_SCHEDULER_KEY
 PROVIDER_ENCRYPTION_KEY=$PROVIDER_ENCRYPTION_KEY
 
 # Management API URL
-CLIPROXYAPI_MANAGEMENT_URL=http://cliproxyapi:8317/v0/management
+CLIPROXYAPI_MANAGEMENT_URL=$CLIPROXYAPI_MANAGEMENT_ENV
 
 # Installation directory (host path for volume mounts)
 INSTALL_DIR=$INSTALL_DIR
@@ -580,8 +895,8 @@ TZ=UTC
 LOG_LEVEL=info
 
 # Full URLs (for reference)
-DASHBOARD_URL=https://${DASHBOARD_SUBDOMAIN}.${DOMAIN}
-API_URL=https://${API_SUBDOMAIN}.${DOMAIN}
+DASHBOARD_URL=$DASHBOARD_PUBLIC_URL
+API_URL=$API_PUBLIC_URL
 EOF
 
     # Perplexity Sidecar (conditional)
@@ -634,15 +949,21 @@ if [ $SKIP_SERVICE -eq 0 ]; then
     # across working directories. Users who copy it from `systemctl cat` and run it
     # from a different cwd will not hit "no configuration file provided: not found"
     # (see https://github.com/itsmylife44/cliproxyapi-dashboard/issues/216).
-    COMPOSE_BASE_CMD="/usr/bin/docker compose --project-directory $INSTALL_DIR/infrastructure"
-    if [ $EXTERNAL_PROXY -eq 1 ]; then
+    if [ $DASHBOARD_ONLY -eq 1 ]; then
+        COMPOSE_BASE_CMD="/usr/bin/docker compose --project-directory $INSTALL_DIR/infrastructure -f $INSTALL_DIR/infrastructure/docker-compose.dashboard-only.yml"
+        COMPOSE_START_CMD="$COMPOSE_BASE_CMD up -d --wait"
+        COMPOSE_DESC="(dashboard only - existing CLIProxyAPI)"
+    else
+        COMPOSE_BASE_CMD="/usr/bin/docker compose --project-directory $INSTALL_DIR/infrastructure"
+    fi
+    if [ $DASHBOARD_ONLY -eq 0 ] && [ $EXTERNAL_PROXY -eq 1 ]; then
         COMPOSE_SERVICES="postgres cliproxyapi docker-proxy dashboard backup-scheduler"
         if [ $PERPLEXITY_ENABLED -eq 1 ]; then
             COMPOSE_SERVICES="$COMPOSE_SERVICES perplexity-sidecar"
         fi
         COMPOSE_START_CMD="$COMPOSE_BASE_CMD up -d --wait $COMPOSE_SERVICES"
         COMPOSE_DESC="(without Caddy - using external reverse proxy)"
-    else
+    elif [ $DASHBOARD_ONLY -eq 0 ]; then
         # No explicit list — Compose starts everything; COMPOSE_PROFILES in .env
         # activates the perplexity profile when present.
         COMPOSE_START_CMD="$COMPOSE_BASE_CMD up -d --wait"
@@ -775,7 +1096,7 @@ echo ""
 # EXTERNAL PROXY MODE SETUP
 # ============================================================================
 
-if [ $EXTERNAL_PROXY -eq 1 ]; then
+if [ $EXTERNAL_PROXY -eq 1 ] && [ $DASHBOARD_ONLY -eq 0 ]; then
     echo ""
     log_info "=== External Proxy Mode Setup ==="
     echo ""
@@ -807,8 +1128,29 @@ if [ $EXTERNAL_PROXY -eq 1 ]; then
     log_info "=== Reverse Proxy Integration Setup ==="
     echo ""
     
-    # Generate Caddy configuration snippet for host Caddy (localhost upstream)
-    CADDY_SNIPPET_HOST=$(cat << 'CADDY_CONFIG'
+    if [ $DASHBOARD_ONLY -eq 1 ]; then
+        # Generate Caddy configuration snippet for host Caddy (localhost upstream)
+        CADDY_SNIPPET_HOST=$(cat << 'CADDY_CONFIG'
+# BEGIN CLIPROXYAPI-AUTO (Dashboard only - host Caddy)
+${DASHBOARD_SUBDOMAIN}.${DOMAIN} {
+    reverse_proxy localhost:3000
+}
+# END CLIPROXYAPI-AUTO
+CADDY_CONFIG
+)
+
+        # Generate Caddy configuration snippet for Dockerized Caddy (service name upstream)
+        CADDY_SNIPPET_DOCKER=$(cat << 'CADDY_DOCKER_CONFIG'
+# BEGIN CLIPROXYAPI-AUTO (Dashboard only - Docker Caddy)
+${DASHBOARD_SUBDOMAIN}.${DOMAIN} {
+    reverse_proxy cliproxyapi-dashboard:3000
+}
+# END CLIPROXYAPI-AUTO
+CADDY_DOCKER_CONFIG
+)
+    else
+        # Generate Caddy configuration snippet for host Caddy (localhost upstream)
+        CADDY_SNIPPET_HOST=$(cat << 'CADDY_CONFIG'
 # BEGIN CLIPROXYAPI-AUTO (Host Caddy - localhost upstream)
 ${DASHBOARD_SUBDOMAIN}.${DOMAIN} {
     reverse_proxy localhost:3000
@@ -821,8 +1163,8 @@ ${API_SUBDOMAIN}.${DOMAIN} {
 CADDY_CONFIG
 )
     
-    # Generate Caddy configuration snippet for Dockerized Caddy (service name upstream)
-    CADDY_SNIPPET_DOCKER=$(cat << 'CADDY_DOCKER_CONFIG'
+        # Generate Caddy configuration snippet for Dockerized Caddy (service name upstream)
+        CADDY_SNIPPET_DOCKER=$(cat << 'CADDY_DOCKER_CONFIG'
 # BEGIN CLIPROXYAPI-AUTO (Docker Caddy - container upstream)
 ${DASHBOARD_SUBDOMAIN}.${DOMAIN} {
     reverse_proxy cliproxyapi-dashboard:3000
@@ -834,6 +1176,7 @@ ${API_SUBDOMAIN}.${DOMAIN} {
 # END CLIPROXYAPI-AUTO
 CADDY_DOCKER_CONFIG
 )
+    fi
     
     # Replace template variables in both snippets
     CADDY_SNIPPET_HOST="${CADDY_SNIPPET_HOST//\$\{DASHBOARD_SUBDOMAIN\}/$DASHBOARD_SUBDOMAIN}"
@@ -844,6 +1187,12 @@ CADDY_DOCKER_CONFIG
     CADDY_SNIPPET_DOCKER="${CADDY_SNIPPET_DOCKER//\$\{API_SUBDOMAIN\}/$API_SUBDOMAIN}"
     CADDY_SNIPPET_DOCKER="${CADDY_SNIPPET_DOCKER//\$\{DOMAIN\}/$DOMAIN}"
     
+    if [ $DASHBOARD_ONLY -eq 1 ]; then
+        CADDY_DOCKER_NETWORK="cliproxyapi_dashboard"
+    else
+        CADDY_DOCKER_NETWORK="cliproxyapi_frontend"
+    fi
+
     log_info "Generated Caddy configurations for both host and Docker Caddy:"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -856,8 +1205,8 @@ CADDY_DOCKER_CONFIG
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "$CADDY_SNIPPET_DOCKER"
     echo ""
-    echo "If using Docker Caddy, also connect it to the CLIProxyAPI frontend network:"
-    echo "  ${YELLOW}docker network connect cliproxyapi_frontend <your-caddy-container-name>${NC}"
+    echo "If using Docker Caddy, also connect it to this stack's Docker network:"
+    echo "  ${YELLOW}docker network connect $CADDY_DOCKER_NETWORK <your-caddy-container-name>${NC}"
     echo ""
     
     read -p "Apply configuration to Caddy? [y/N]: " APPLY_CADDY
@@ -951,10 +1300,8 @@ CADDY_DOCKER_CONFIG
         fi
     else
         log_info "Skipping auto-apply. Please manually add one of the configurations above to your Caddyfile."
-        if [[ "${CADDY_MODE:-}" =~ ^[Dd]ocker$ ]]; then
-            log_info "Remember to connect Caddy to the frontend network:"
-            echo "  ${YELLOW}docker network connect cliproxyapi_frontend <your-caddy-container-name>${NC}"
-        fi
+        log_info "If you use Docker Caddy, connect it to this stack's Docker network:"
+        echo "  ${YELLOW}docker network connect $CADDY_DOCKER_NETWORK <your-caddy-container-name>${NC}"
     fi
     
     echo ""
@@ -1074,7 +1421,11 @@ echo ""
 log_info "=== Installation Complete ==="
 echo ""
 
-log_success "CLIProxyAPI Stack installation completed successfully!"
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    log_success "CLIProxyAPI Dashboard-only installation completed successfully!"
+else
+    log_success "CLIProxyAPI Stack installation completed successfully!"
+fi
 echo ""
 log_info "Next steps:"
 echo "  1. Start the stack:"
@@ -1083,12 +1434,25 @@ echo ""
 echo "  2. Check status:"
 echo "     sudo systemctl status cliproxyapi-stack"
 echo ""
-echo "  3. View logs (must run from infrastructure/ — docker compose"
-echo "     needs to find docker-compose.yml in the current directory):"
+echo "  3. View logs:"
 echo "     cd $INSTALL_DIR/infrastructure"
-echo "     docker compose logs -f"
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    echo "     docker compose -f docker-compose.dashboard-only.yml logs -f"
+else
+    echo "     docker compose logs -f"
+fi
 echo ""
-if [ $EXTERNAL_PROXY -eq 1 ]; then
+if [ $DASHBOARD_ONLY -eq 1 ]; then
+    echo "  4. Configure your reverse proxy:"
+    echo "     - Dashboard routes to: localhost:3000"
+    echo "     - CLIProxyAPI remains your existing service: $EXISTING_API_URL"
+    echo "     - Ports 80/443 are not bound by the dashboard-only stack"
+    echo ""
+    echo "  5. Access services:"
+    echo "     Dashboard: https://${DASHBOARD_SUBDOMAIN}.${DOMAIN}"
+    echo "     Existing API: $EXISTING_API_URL"
+    echo ""
+elif [ $EXTERNAL_PROXY -eq 1 ]; then
     echo "  4. Configure your reverse proxy:"
     echo "     - Dashboard routes to: localhost:3000"
     echo "     - API routes to: localhost:8317"
@@ -1104,7 +1468,7 @@ else
     echo "     API: https://${API_SUBDOMAIN}.${DOMAIN}"
     echo ""
 fi
-echo "  $([ $EXTERNAL_PROXY -eq 1 ] && echo 5 || echo 4). Create your admin account at the dashboard, then configure"
+echo "  $([ $EXTERNAL_PROXY -eq 1 ] && echo 6 || echo 5). Create your admin account at the dashboard, then configure"
 echo "     API keys and providers through the Configuration page."
 echo ""
 log_info "Backup commands:"

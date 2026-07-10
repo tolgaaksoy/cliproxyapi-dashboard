@@ -26,7 +26,7 @@ services:
 
   # Requires ./config.local.yaml mounted below with `port: 8317` for management/OAuth
   cliproxyapi:
-    image: ghcr.io/tolgaaksoy/cliproxyapi:latest
+    image: eceasy/cli-proxy-api:latest
     container_name: cliproxyapi
     restart: unless-stopped
     networks:
@@ -35,6 +35,8 @@ services:
     environment:
       MANAGEMENT_PASSWORD: ${MANAGEMENT_API_KEY}
       DEPLOY: production
+      CLIPROXY_TELEGRAM_BOT_TOKEN: ${CLIPROXY_TELEGRAM_BOT_TOKEN:-}
+      CLIPROXY_TELEGRAM_ALLOWED_USERS: ${CLIPROXY_TELEGRAM_ALLOWED_USERS:-}
     ports:
       - "127.0.0.1:8317:8317"
       - "127.0.0.1:8085:8085"
@@ -50,7 +52,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "/dev/null", "http://localhost:8317/"]
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8317"]
       interval: 30s
       timeout: 10s
       retries: 3

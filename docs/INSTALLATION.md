@@ -11,10 +11,10 @@ Before installing, ensure you have:
 **For server deployment:**
 
 - **Operating System**: Ubuntu 20.04+ or Debian 11+ (Ubuntu/Debian derivatives like Zorin OS, Linux Mint, Pop!_OS, elementary, Raspbian, and LMDE are auto-detected via `ID_LIKE`)
-- **Root Access**: Required for Docker and firewall configuration
+- **Root Access**: Required for Docker installation and optional firewall configuration
 - **Domain Name**: A registered domain with DNS control
 - **Server**: VPS or dedicated server with public IP address
-- **Ports Available**: 80, 443, 8085, 1455, 54545, 51121, 11451
+- **Ports Available**: Depends on the selected mode. Integrated Caddy needs 80/tcp, 443/tcp, and 443/udp; OAuth callbacks add 8085, 1455, 54545, 51121, and 11451/tcp. Dashboard-only and external proxy mode should be exposed through your existing reverse proxy.
 
 ### Preflight Checklist
 
@@ -22,7 +22,8 @@ Complete **before** running the installer:
 
 - [ ] **DNS Records Configured**: Set A records for `dashboard.yourdomain.com` and `api.yourdomain.com` pointing to your server IP
 - [ ] **DNS Propagated**: Verify records with `dig dashboard.yourdomain.com` (allow 5-15 minutes)
-- [ ] **Ports Available**: Confirm no services using ports 80, 443, 8085, 1455, 54545, 51121, 11451
+- [ ] **Ports Available**: Confirm no services are already using ports 80 and 443 for integrated Caddy mode; OAuth callback ports 8085, 1455, 54545, 51121, and 11451 are only required if OAuth callbacks are enabled
+- [ ] **Firewall Plan**: If you want the installer to manage UFW, know your SSH port and any existing service ports that must stay reachable
 - [ ] **Root Access**: SSH access with `sudo` or root privileges
 - [ ] **First Admin Window**: Plan to create your admin account immediately after installation completes
 
@@ -58,7 +59,7 @@ sudo ./install.sh
 The installer will:
 1. Prompt for domain and subdomain configuration
 2. Install Docker and Docker Compose (if not already installed)
-3. Configure UFW firewall with required ports
+3. Optionally configure UFW firewall rules with explicit confirmation
 4. Generate secure secrets (JWT_SECRET, MANAGEMENT_API_KEY, POSTGRES_PASSWORD, COLLECTOR_API_KEY, BACKUP_SCHEDULER_KEY)
 5. Pull the pre-built dashboard image from GHCR
 6. Create `infrastructure/.env` with all required configuration
@@ -103,6 +104,49 @@ docker compose logs usage-collector
 ```
 
 The usage collector runs automatically and will begin tracking API requests to display in the Dashboard's Usage page.
+
+## Dashboard-Only Install
+
+Use dashboard-only mode when you already have CLIProxyAPI installed and want this project to provide only the web UI and its dashboard database.
+
+```bash
+git clone https://github.com/itsmylife44/cliproxyapi-dashboard.git
+cd cliproxyapi-dashboard
+sudo ./install.sh --dashboard-only
+```
+
+This mode installs:
+
+- Dashboard
+- PostgreSQL for dashboard data
+- Usage collector and backup scheduler helper containers
+
+It does not install:
+
+- CLIProxyAPI
+- Caddy
+- Docker socket proxy
+- Perplexity sidecar
+
+During installation you will be prompted for:
+
+- Existing CLIProxyAPI management URL, for example `https://proxy.example.com/v0/management` for a remote server or `http://host.docker.internal:8317/v0/management` for same-host non-Docker installs
+- Existing CLIProxyAPI public API URL, for example `https://api.example.com`
+- Existing CLIProxyAPI management API key, matching the proxy's management password/key
+
+The dashboard is exposed on `127.0.0.1:3000`, so put your existing reverse proxy in front of it. The management URL must be reachable from inside the dashboard container. If your existing CLIProxyAPI runs directly on the same host and publishes port `8317`, `host.docker.internal` is available inside the dashboard container.
+
+Having only the public OpenAI-compatible API URL is not enough for dashboard management features. The dashboard also needs the CLIProxyAPI management endpoint (`/v0/management`) and its management key.
+
+After installation:
+
+```bash
+sudo systemctl start cliproxyapi-stack
+cd infrastructure
+docker compose -f docker-compose.dashboard-only.yml logs -f
+```
+
+Some stack-management features, such as restarting or updating the CLIProxyAPI container from the dashboard, are not available in dashboard-only mode unless you separately provide compatible Docker access and container naming.
 
 ### Initial Setup Flow
 
@@ -220,13 +264,22 @@ sudo systemctl start docker
 
 > **Note**: The automated installer (`install.sh`) detects your OS via `/etc/os-release` and uses the correct repository path automatically.
 
-### 2. Configure Firewall
+### 2. Configure Firewall (Optional)
+
+Skip this section if your firewall is managed elsewhere. On existing servers, do not enable UFW until you have listed every inbound service port that must remain reachable. If your SSH service does not use port `22`, replace `22` below with your actual SSH port before enabling UFW.
 
 ```bash
 sudo apt-get install -y ufw
 
-# Allow SSH (prevent lockout)
-sudo ufw limit 22/tcp
+# Allow SSH first. Change 22 if your server uses a different SSH port.
+SSH_PORT=22
+sudo ufw limit "${SSH_PORT}/tcp"
+
+# Keep any existing services reachable before enabling UFW
+# Examples:
+# sudo ufw allow 25/tcp   # SMTP
+# sudo ufw allow 587/tcp  # Submission
+# sudo ufw allow 8443/tcp # Existing app
 
 # Allow HTTP/HTTPS
 sudo ufw allow 80/tcp
